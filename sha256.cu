@@ -411,7 +411,6 @@ int main(int argc, char** argv)
   //
   clock_t start, finish;
   start = clock();
-  for(int i = 0;i< 100000;i++) {
   beu32* d_hash;
 
   cudaMalloc(&d_hash,sizeof(beu32)*8);
@@ -471,7 +470,6 @@ int main(int argc, char** argv)
   cudaFree(d_hash);
 
   cudaDeviceReset();
- }
   finish = clock();
   std::cout << finish - start << "/" << CLOCKS_PER_SEC << " (s) " << std::endl;
   return 0;
