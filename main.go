@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -39,7 +40,8 @@ func DecodeKeyInput(w http.ResponseWriter, r *http.Request) {
 	KeyInputs = append(KeyInputs, keyInput)
 	seckey, _ := hex.DecodeString(keyInput.Key)
 	pubkey := secp256k1Decode(seckey)
-	json.NewEncoder(w).Encode(pubkey)
+	hash := sha256.Sum256(pubkey)
+	json.NewEncoder(w).Encode(hash[:])
 }
 
 // main the function where execution of the program begins

@@ -1,482 +1,441 @@
-// -*- compile-command: "nvcc -m 64 -arch sm_35 -Xptxas=-v,-abi=yes -cubin sha256.cu"; -*-
+//
+//  =============== SHA256 part on nVidia GPU ======================
+//
+// NOTE: compile this .cu module for compute_10,sm_10 with --maxrregcount=64
+//
 
+#include <map>
 #include <cuda.h>
-#include<ctime>
-#define WARP_SIZE                    32
 
-#define NUM_WARPS_IN_BLOCK           4 // arbitrarily chosen for now
-#define NUM_THREADS_IN_BLOCK         (NUM_WARPS_IN_BLOCK * WARP_SIZE)
+#include "salsa_kernel.h"
+#include "miner.h"
 
-#define LAUNCH_BOUNDS                __launch_bounds__(NUM_THREADS_IN_BLOCK,1)
-#define DEVICE_FUNCTION_QUALIFIERS   __device__ __forceinline__
+#include "sha256.h"
 
-//
-// SQUASH C++ NAME MANGLING SO WE CAN LOAD AT RUNTIME VIA DRIVER API
-//
-#define KERNEL_QUALIFIERS            extern "C" __global__
+// define some error checking macros
+#undef checkCudaErrors
 
-//
-//
-//
-
-#define STRINGIFY(x)  ""#x
-#define COMMA         ,
-#define EMPTY
-
-//
-// BIG-ENDIAN UNSIGNED 32-bit
-//
-
-typedef unsigned int beu32;
-
-//
-// 64 WORDS + MAGIC
-//
-#define W64(notLast,last)                        \
-  W(0 ,0  ,0  ,0  ,0 , 0x428a2f98)   notLast     \
-  W(1 ,0  ,0  ,0  ,0 , 0x71374491)   notLast     \
-  W(2 ,0  ,0  ,0  ,0 , 0xb5c0fbcf)   notLast     \
-  W(3 ,0  ,0  ,0  ,0 , 0xe9b5dba5)   notLast     \
-  W(4 ,0  ,0  ,0  ,0 , 0x3956c25b)   notLast     \
-  W(5 ,0  ,0  ,0  ,0 , 0x59f111f1)   notLast     \
-  W(6 ,0  ,0  ,0  ,0 , 0x923f82a4)   notLast     \
-  W(7 ,0  ,0  ,0  ,0 , 0xab1c5ed5)   notLast     \
-  W(8 ,0  ,0  ,0  ,0 , 0xd807aa98)   notLast     \
-  W(9 ,0  ,0  ,0  ,0 , 0x12835b01)   notLast     \
-  W(10,0  ,0  ,0  ,0 , 0x243185be)   notLast     \
-  W(11,0  ,0  ,0  ,0 , 0x550c7dc3)   notLast     \
-  W(12,0  ,0  ,0  ,0 , 0x72be5d74)   notLast     \
-  W(13,0  ,0  ,0  ,0 , 0x80deb1fe)   notLast     \
-  W(14,0  ,0  ,0  ,0 , 0x9bdc06a7)   notLast     \
-  W(15,0  ,0  ,0  ,0 , 0xc19bf174)   notLast     \
-  W(16,0  ,1  ,9  ,14, 0xe49b69c1)   notLast     \
-  W(17,1  ,2  ,10 ,15, 0xefbe4786)   notLast     \
-  W(18,2  ,3  ,11 ,16, 0x0fc19dc6)   notLast     \
-  W(19,3  ,4  ,12 ,17, 0x240ca1cc)   notLast     \
-  W(20,4  ,5  ,13 ,18, 0x2de92c6f)   notLast     \
-  W(21,5  ,6  ,14 ,19, 0x4a7484aa)   notLast     \
-  W(22,6  ,7  ,15 ,20, 0x5cb0a9dc)   notLast     \
-  W(23,7  ,8  ,16 ,21, 0x76f988da)   notLast     \
-  W(24,8  ,9  ,17 ,22, 0x983e5152)   notLast     \
-  W(25,9  ,10 ,18 ,23, 0xa831c66d)   notLast     \
-  W(26,10 ,11 ,19 ,24, 0xb00327c8)   notLast     \
-  W(27,11 ,12 ,20 ,25, 0xbf597fc7)   notLast     \
-  W(28,12 ,13 ,21 ,26, 0xc6e00bf3)   notLast     \
-  W(29,13 ,14 ,22 ,27, 0xd5a79147)   notLast     \
-  W(30,14 ,15 ,23 ,28, 0x06ca6351)   notLast     \
-  W(31,15 ,16 ,24 ,29, 0x14292967)   notLast     \
-  W(32,16 ,17 ,25 ,30, 0x27b70a85)   notLast     \
-  W(33,17 ,18 ,26 ,31, 0x2e1b2138)   notLast     \
-  W(34,18 ,19 ,27 ,32, 0x4d2c6dfc)   notLast     \
-  W(35,19 ,20 ,28 ,33, 0x53380d13)   notLast     \
-  W(36,20 ,21 ,29 ,34, 0x650a7354)   notLast     \
-  W(37,21 ,22 ,30 ,35, 0x766a0abb)   notLast     \
-  W(38,22 ,23 ,31 ,36, 0x81c2c92e)   notLast     \
-  W(39,23 ,24 ,32 ,37, 0x92722c85)   notLast     \
-  W(40,24 ,25 ,33 ,38, 0xa2bfe8a1)   notLast     \
-  W(41,25 ,26 ,34 ,39, 0xa81a664b)   notLast     \
-  W(42,26 ,27 ,35 ,40, 0xc24b8b70)   notLast     \
-  W(43,27 ,28 ,36 ,41, 0xc76c51a3)   notLast     \
-  W(44,28 ,29 ,37 ,42, 0xd192e819)   notLast     \
-  W(45,29 ,30 ,38 ,43, 0xd6990624)   notLast     \
-  W(46,30 ,31 ,39 ,44, 0xf40e3585)   notLast     \
-  W(47,31 ,32 ,40 ,45, 0x106aa070)   notLast     \
-  W(48,32 ,33 ,41 ,46, 0x19a4c116)   notLast     \
-  W(49,33 ,34 ,42 ,47, 0x1e376c08)   notLast     \
-  W(50,34 ,35 ,43 ,48, 0x2748774c)   notLast     \
-  W(51,35 ,36 ,44 ,49, 0x34b0bcb5)   notLast     \
-  W(52,36 ,37 ,45 ,50, 0x391c0cb3)   notLast     \
-  W(53,37 ,38 ,46 ,51, 0x4ed8aa4a)   notLast     \
-  W(54,38 ,39 ,47 ,52, 0x5b9cca4f)   notLast     \
-  W(55,39 ,40 ,48 ,53, 0x682e6ff3)   notLast     \
-  W(56,40 ,41 ,49 ,54, 0x748f82ee)   notLast     \
-  W(57,41 ,42 ,50 ,55, 0x78a5636f)   notLast     \
-  W(58,42 ,43 ,51 ,56, 0x84c87814)   notLast     \
-  W(59,43 ,44 ,52 ,57, 0x8cc70208)   notLast     \
-  W(60,44 ,45 ,53 ,58, 0x90befffa)   notLast     \
-  W(61,45 ,46 ,54 ,59, 0xa4506ceb)   notLast     \
-  W(62,46 ,47 ,55 ,60, 0xbef9a3f7)   notLast     \
-  W(63,47 ,48 ,56 ,61, 0xc67178f2)   last
-
-//
-// HASH 8
-//
-#define H8(notLast,last)                        \
-  H(0, a, 0x6a09e667)   notLast                 \
-  H(1, b, 0xbb67ae85)   notLast                 \
-  H(2, c, 0x3c6ef372)   notLast                 \
-  H(3, d, 0xa54ff53a)   notLast                 \
-  H(4, e, 0x510e527f)   notLast                 \
-  H(5, f, 0x9b05688c)   notLast                 \
-  H(6, g, 0x1f83d9ab)   notLast                 \
-  H(7, h, 0x5be0cd19)   last
-
-//
-// MIX 8
-//
-#define M8(notLast,last)                      \
-  M(h, g)   notLast                           \
-  M(g, f)   notLast                           \
-  M(f, e)   notLast                           \
-  M(e, d)   notLast                           \
-  M(d, c)   notLast                           \
-  M(c, b)   notLast                           \
-  M(b, a)   notLast                           \
-  M(a, t)   last
-
-
-//
-// CHUNK 16
-//
-#define C16(notLast,last)                     \
-  C(0 )   notLast                             \
-  C(1 )   notLast                             \
-  C(2 )   notLast                             \
-  C(3 )   notLast                             \
-  C(4 )   notLast                             \
-  C(5 )   notLast                             \
-  C(6 )   notLast                             \
-  C(7 )   notLast                             \
-  C(8 )   notLast                             \
-  C(9 )   notLast                             \
-  C(10)   notLast                             \
-  C(11)   notLast                             \
-  C(12)   notLast                             \
-  C(13)   notLast                             \
-  C(14)   notLast                             \
-  C(15)   last
-
-//
-// NOT AND
-//
-DEVICE_FUNCTION_QUALIFIERS
-beu32
-notand(beu32 a, const beu32 b)
-{
-#if __CUDA_ARCH__ >= 100
-  beu32 d;
-  asm("not.b32  %1, %1;     \n\t"
-      "and.b32  %0, %1, %2; \n\t"
-      : "=r"(d), "+r"(a) : "r"(b));
-  return d;
+#if WIN32
+#define DELIMITER '/'
 #else
-  return ~a & b;
+#define DELIMITER '/'
 #endif
+#define __FILENAME__ ( strrchr(__FILE__, DELIMITER) != NULL ? strrchr(__FILE__, DELIMITER)+1 : __FILE__ )
+
+#define checkCudaErrors(x) \
+{ \
+    cudaGetLastError(); \
+    x; \
+    cudaError_t err = cudaGetLastError(); \
+    if (err != cudaSuccess) \
+        applog(LOG_ERR, "GPU #%d: cudaError %d (%s) calling '%s' (%s line %d)\n", device_map[thr_id], err, cudaGetErrorString(err), #x, __FILENAME__, __LINE__); \
 }
 
+// from salsa_kernel.cu
+extern std::map<int, uint32_t *> context_idata[2];
+extern std::map<int, uint32_t *> context_odata[2];
+extern std::map<int, cudaStream_t> context_streams[2];
+extern std::map<int, uint32_t *> context_tstate[2];
+extern std::map<int, uint32_t *> context_ostate[2];
+extern std::map<int, uint32_t *> context_hash[2];
+
+static const uint32_t host_sha256_h[8] = {
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+};
+
+static const uint32_t host_sha256_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+/* Elementary functions used by SHA256 */
+#define Ch(x, y, z)     ((x & (y ^ z)) ^ z)
+#define Maj(x, y, z)    ((x & (y | z)) | (y & z))
+#define ROTR(x, n)      ((x >> n) | (x << (32 - n)))
+#define S0(x)           (ROTR(x, 2) ^ ROTR(x, 13) ^ ROTR(x, 22))
+#define S1(x)           (ROTR(x, 6) ^ ROTR(x, 11) ^ ROTR(x, 25))
+#define s0(x)           (ROTR(x, 7) ^ ROTR(x, 18) ^ (x >> 3))
+#define s1(x)           (ROTR(x, 17) ^ ROTR(x, 19) ^ (x >> 10))
+
+/* SHA256 round function */
+#define RND(a, b, c, d, e, f, g, h, k) \
+    do { \
+        t0 = h + S1(e) + Ch(e, f, g) + k; \
+        t1 = S0(a) + Maj(a, b, c); \
+        d += t0; \
+        h  = t0 + t1; \
+    } while (0)
+
+/* Adjusted round function for rotating state */
+#define RNDr(S, W, i) \
+    RND(S[(64 - i) % 8], S[(65 - i) % 8], \
+        S[(66 - i) % 8], S[(67 - i) % 8], \
+        S[(68 - i) % 8], S[(69 - i) % 8], \
+        S[(70 - i) % 8], S[(71 - i) % 8], \
+        W[i] + sha256_k[i])
+
+static const uint32_t host_keypad[12] = {
+    0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000280
+};
+
+static const uint32_t host_innerpad[11] = {
+    0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x000004a0
+};
+
+static const uint32_t host_outerpad[8] = {
+    0x80000000, 0, 0, 0, 0, 0, 0, 0x00000300
+};
+
+static const uint32_t host_finalblk[16] = {
+    0x00000001, 0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000620
+};
+
 //
-// ROTATE RIGHT
+// CUDA code
 //
-DEVICE_FUNCTION_QUALIFIERS
-beu32
-ror(const beu32 a, const unsigned int n)
+
+__constant__ uint32_t sha256_h[8];
+__constant__ uint32_t sha256_k[64];
+__constant__ uint32_t keypad[12];
+__constant__ uint32_t innerpad[11];
+__constant__ uint32_t outerpad[8];
+__constant__ uint32_t finalblk[16];
+__constant__ uint32_t pdata[20];
+__constant__ uint32_t midstate[8];
+
+__device__ void mycpy12(uint32_t *d, const uint32_t *s) {
+#pragma unroll 3
+    for (int k=0; k < 3; k++) d[k] = s[k];
+}
+
+__device__ void mycpy16(uint32_t *d, const uint32_t *s) {
+#pragma unroll 4
+    for (int k=0; k < 4; k++) d[k] = s[k];
+}
+
+__device__ void mycpy32(uint32_t *d, const uint32_t *s) {
+#pragma unroll 8
+    for (int k=0; k < 8; k++) d[k] = s[k];
+}
+
+__device__ void mycpy44(uint32_t *d, const uint32_t *s) {
+#pragma unroll 11
+    for (int k=0; k < 11; k++) d[k] = s[k];
+}
+
+__device__ void mycpy48(uint32_t *d, const uint32_t *s) {
+#pragma unroll 12
+    for (int k=0; k < 12; k++) d[k] = s[k];
+}
+
+__device__ void mycpy64(uint32_t *d, const uint32_t *s) {
+#pragma unroll 16
+    for (int k=0; k < 16; k++) d[k] = s[k];
+}
+
+__device__ uint32_t cuda_swab32(uint32_t x)
 {
-#if __CUDA_ARCH__ >= 350 // BEWARE THIS CRASHES NVCC/CICC 5.0 -- BUG REPORTED
-  beu32 d;
-  asm("shf.r.clamp.b32 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(a), "r"(n));
-  return d;
-#else
-  return (a >> n) | (a << (32 - n));
-#endif
+    return (((x << 24) & 0xff000000u) | ((x << 8) & 0x00ff0000u)
+          | ((x >> 8) & 0x0000ff00u) | ((x >> 24) & 0x000000ffu));
 }
 
-//
-// SHIFT RIGHT
-//
-DEVICE_FUNCTION_QUALIFIERS
-beu32
-shr(const beu32 a, const unsigned int n)
+__device__ void mycpy32_swab32(uint32_t *d, const uint32_t *s) {
+#pragma unroll 8
+    for (int k=0; k < 8; k++) d[k] = cuda_swab32(s[k]);
+}
+
+__device__ void mycpy64_swab32(uint32_t *d, const uint32_t *s) {
+#pragma unroll 16
+    for (int k=0; k < 16; k++) d[k] = cuda_swab32(s[k]);
+}
+
+__device__ void cuda_sha256_init(uint32_t *state)
 {
-#if __CUDA_ARCH__ >= 999 // 200 -- DISABLED
-  beu32 d;
-  asm("vshr.u32.u32.u32.clamp %0, %1, %2;" : "=r"(d) : "r"(a), "r"(n));
-  return d;
-#else
-  return a >> n;
-#endif
+    mycpy32(state, sha256_h);
 }
 
-//
-// ADD 3
-//
-DEVICE_FUNCTION_QUALIFIERS
-beu32
-add3(const beu32 a, const beu32 b, const beu32 c)
+/*
+ * SHA256 block compression function.  The 256-bit state is transformed via
+ * the 512-bit input block to produce a new state. Modified for lower register use.
+ */
+__device__ void cuda_sha256_transform(uint32_t *state, const uint32_t *block)
 {
-#if __CUDA_ARCH__ >= 999 // 200 -- DISABLED
-  beu32 d;
-  asm("vadd.u32.u32.u32.add %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
-  return d;
-#else
-  return a + b + c;
-#endif
+    uint32_t W[64]; // only 4 of these are accessed during each partial Mix
+    uint32_t S[8];
+    uint32_t t0, t1;
+    int i;
+
+    /* 1. Initialize working variables. */
+    mycpy32(S, state);
+
+    /* 2. Prepare message schedule W and Mix. */
+    mycpy16(W, block);
+    RNDr(S, W,  0); RNDr(S, W,  1); RNDr(S, W,  2); RNDr(S, W,  3);
+
+    mycpy16(W+4, block+4);
+    RNDr(S, W,  4); RNDr(S, W,  5); RNDr(S, W,  6); RNDr(S, W,  7);
+
+    mycpy16(W+8, block+8);
+    RNDr(S, W,  8); RNDr(S, W,  9); RNDr(S, W, 10); RNDr(S, W, 11);
+
+    mycpy16(W+12, block+12);
+    RNDr(S, W, 12); RNDr(S, W, 13); RNDr(S, W, 14); RNDr(S, W, 15);
+
+#pragma unroll 2
+    for (i = 16; i < 20; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 16); RNDr(S, W, 17); RNDr(S, W, 18); RNDr(S, W, 19);
+
+#pragma unroll 2
+    for (i = 20; i < 24; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 20); RNDr(S, W, 21); RNDr(S, W, 22); RNDr(S, W, 23);
+
+#pragma unroll 2
+    for (i = 24; i < 28; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 24); RNDr(S, W, 25); RNDr(S, W, 26); RNDr(S, W, 27);
+
+#pragma unroll 2
+    for (i = 28; i < 32; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 28); RNDr(S, W, 29); RNDr(S, W, 30); RNDr(S, W, 31);
+
+#pragma unroll 2
+    for (i = 32; i < 36; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 32); RNDr(S, W, 33); RNDr(S, W, 34); RNDr(S, W, 35);
+
+#pragma unroll 2
+    for (i = 36; i < 40; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 36); RNDr(S, W, 37); RNDr(S, W, 38); RNDr(S, W, 39);
+
+#pragma unroll 2
+    for (i = 40; i < 44; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 40); RNDr(S, W, 41); RNDr(S, W, 42); RNDr(S, W, 43);
+
+#pragma unroll 2
+    for (i = 44; i < 48; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 44); RNDr(S, W, 45); RNDr(S, W, 46); RNDr(S, W, 47);
+
+#pragma unroll 2
+    for (i = 48; i < 52; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 48); RNDr(S, W, 49); RNDr(S, W, 50); RNDr(S, W, 51);
+
+#pragma unroll 2
+    for (i = 52; i < 56; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 52); RNDr(S, W, 53); RNDr(S, W, 54); RNDr(S, W, 55);
+
+#pragma unroll 2
+    for (i = 56; i < 60; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 56); RNDr(S, W, 57); RNDr(S, W, 58); RNDr(S, W, 59);
+
+#pragma unroll 2
+    for (i = 60; i < 64; i += 2) {
+        W[i]   = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+        W[i+1] = s1(W[i - 1]) + W[i - 6] + s0(W[i - 14]) + W[i - 15]; }
+    RNDr(S, W, 60); RNDr(S, W, 61); RNDr(S, W, 62); RNDr(S, W, 63);
+
+    /* 3. Mix local working variables into global state */
+#pragma unroll 8
+    for (i = 0; i < 8; i++)
+        state[i] += S[i];
 }
 
 //
-// MIX ALPHAS
+// HMAC SHA256 functions, modified to work with pdata and nonce directly
 //
-DEVICE_FUNCTION_QUALIFIERS
-void
-hmix(beu32* a,
-     beu32* b,
-     beu32* c,
-     beu32* d,
-     beu32* e,
-     beu32* f,
-     beu32* g,
-     beu32* h,
-     beu32* t)
+
+__device__ void cuda_HMAC_SHA256_80_init(uint32_t *tstate, uint32_t *ostate, uint32_t nonce)
 {
-#undef  M
-#define M(alpha,mix) *alpha = *mix;
+    uint32_t ihash[8];
+    uint32_t pad[16];
+    int i;
 
-  M8(EMPTY,EMPTY);
+    /* tstate is assumed to contain the midstate of key */
+    mycpy12(pad, pdata + 16);
+    pad[3] = nonce;
+    mycpy48(pad + 4, keypad);
+    cuda_sha256_transform(tstate, pad);
+    mycpy32(ihash, tstate);
+
+    cuda_sha256_init(ostate);
+#pragma unroll 8
+    for (i = 0; i < 8; i++)
+        pad[i] = ihash[i] ^ 0x5c5c5c5c;
+#pragma unroll 8
+    for (i=8; i < 16; i++)
+        pad[i] = 0x5c5c5c5c;
+    cuda_sha256_transform(ostate, pad);
+
+    cuda_sha256_init(tstate);
+#pragma unroll 8
+    for (i = 0; i < 8; i++)
+        pad[i] = ihash[i] ^ 0x36363636;
+#pragma unroll 8
+    for (i=8; i < 16; i++)
+        pad[i] = 0x36363636;
+    cuda_sha256_transform(tstate, pad);
 }
 
-////////////////////////////////////////////////////////////////////////
-//
-// SHA-256 CHUNK FUNC
-//
-#undef  C
-#define C(i)              const beu32 c##i
-
-#undef  H
-#define H(i,alpha,magic)  const beu32 hin##i, beu32* hout##i
-
-DEVICE_FUNCTION_QUALIFIERS
-void
-sha256_chunk(C16(COMMA,EMPTY),
-             H8(COMMA,EMPTY))
+__device__ void cuda_PBKDF2_SHA256_80_128(const uint32_t *tstate,
+    const uint32_t *ostate, uint32_t *output, uint32_t nonce)
 {
-  //
-  // DECLARE 'W' REGISTERS
-  //
-#undef  W
-#define W(i,m16,m15,m7,m2,magic)  beu32 w##i;
+    uint32_t istate[8], ostate2[8];
+    uint32_t ibuf[16], obuf[16];
 
-  W64(EMPTY,EMPTY);
+    mycpy32(istate, tstate);
+    cuda_sha256_transform(istate, pdata);
+    
+    mycpy12(ibuf, pdata + 16);
+    ibuf[3] = nonce;
+    ibuf[4] = 1;
+    mycpy44(ibuf + 5, innerpad);
 
-  //
-  // INIT W REGISTERS 0-15 OFF OF CHUNK REGISTERS
-  //
-#undef  C
-#define C(i)  w##i = c##i;
+    mycpy32(obuf, istate);
+    mycpy32(obuf + 8, outerpad);
+    cuda_sha256_transform(obuf, ibuf);
 
-  C16(EMPTY,EMPTY);
+    mycpy32(ostate2, ostate);
+    cuda_sha256_transform(ostate2, obuf);
+    mycpy32_swab32(output, ostate2);       // TODO: coalescing would be desired
 
-  //
-  // INIT W REGISTERS 16-63
-  //
-#undef  W
-#define W(i,m16,m15,m7,m2,magic)                                \
-  if (i >= 16) {                                                \
-    w##i = w##m16 +                                             \
-      add3(w##m7,                                               \
-           (ror(w##m15, 7) ^ ror(w##m15,18) ^ shr(w##m15, 3)),  \
-           (ror(w##m2, 17) ^ ror(w##m2, 19) ^ shr(w##m2, 10))); \
-  }
+    mycpy32(obuf, istate);
+    ibuf[4] = 2;
+    cuda_sha256_transform(obuf, ibuf);
 
-  W64(EMPTY,EMPTY);
+    mycpy32(ostate2, ostate);
+    cuda_sha256_transform(ostate2, obuf);
+    mycpy32_swab32(output+8, ostate2);     // TODO: coalescing would be desired
 
-  //
-  // INIT H REGISTERS
-  //
-#undef  H
-#define H(i,alpha,magic)  beu32 alpha = hin##i;
+    mycpy32(obuf, istate);
+    ibuf[4] = 3;
+    cuda_sha256_transform(obuf, ibuf);
 
-  H8(EMPTY,EMPTY);
+    mycpy32(ostate2, ostate);
+    cuda_sha256_transform(ostate2, obuf);
+    mycpy32_swab32(output+16, ostate2);    // TODO: coalescing would be desired
 
-  //
-  // MAIN LOOP
-  //
-#undef  W
-#define W(i,m16,m15,m7,m2,magic)                        \
-  {                                                     \
-    beu32 t = add3(add3(h,w##i,magic),                  \
-                   (ror(e,6) ^ ror(e,11) ^ ror(e,25)),  \
-                   ((e & f) ^ notand(e,g)));            \
-                                                        \
-    d += t;                                             \
-                                                        \
-    t = add3(t,                                         \
-             (ror(a,2) ^ ror(a,13) ^ ror(a,22)),        \
-             ((a & (b ^ c)) ^ (b & c)));                \
-                                                        \
-    hmix(&a,&b,&c,&d,&e,&f,&g,&h,&t);                   \
-  }
+    mycpy32(obuf, istate);
+    ibuf[4] = 4;
+    cuda_sha256_transform(obuf, ibuf);
 
-  W64(EMPTY,EMPTY);
-
-  //
-  // ADD H MAGIC TO ALPHAS
-  //
-#undef  H
-#define H(i,alpha,magic)  *hout##i = hin##i + alpha;
-
-  H8(EMPTY,EMPTY);
+    mycpy32(ostate2, ostate);
+    cuda_sha256_transform(ostate2, obuf);
+    mycpy32_swab32(output+24, ostate2);    // TODO: coalescing would be desired
 }
 
-////////////////////////////////////////////////////////////////////////
-//
-// CHUNK 0 IS KICKSTARTED WITH CONSTANT HASH INPUTS
-//
-#undef  C
-#define C(i)              const beu32 c##i
-
-#undef  H
-#define H(i,alpha,magic)  beu32* hout##i
-
-DEVICE_FUNCTION_QUALIFIERS
-void
-sha256_chunk0(C16(COMMA,EMPTY),H8(COMMA,EMPTY))
+__global__ void cuda_pre_sha256(uint32_t g_inp[32], uint32_t g_tstate_ext[8], uint32_t g_ostate_ext[8], uint32_t nonce)
 {
-#undef  C
-#define C(i)              c##i
+    nonce        +=       (blockIdx.x * blockDim.x) + threadIdx.x; 
+    g_inp        += 32 * ((blockIdx.x * blockDim.x) + threadIdx.x);
+    g_tstate_ext +=  8 * ((blockIdx.x * blockDim.x) + threadIdx.x);
+    g_ostate_ext +=  8 * ((blockIdx.x * blockDim.x) + threadIdx.x);
 
-#undef  H
-#define H(i,alpha,magic)  magic,hout##i
+    uint32_t tstate[8], ostate[8];
+    mycpy32(tstate, midstate);
 
-  sha256_chunk(C16(COMMA,EMPTY),H8(COMMA,EMPTY));
+    cuda_HMAC_SHA256_80_init(tstate, ostate, nonce);
+
+    mycpy32(g_tstate_ext, tstate);            // TODO: coalescing would be desired
+    mycpy32(g_ostate_ext, ostate);            // TODO: coalescing would be desired
+
+    cuda_PBKDF2_SHA256_80_128(tstate, ostate, g_inp, nonce);
 }
 
-
-////////////////////////////////////////////////////////////////////////
-//
-// TEST KERNEL
-//
-
-#define PXL_SHA256_KERNEL_MAIN
-#ifdef  PXL_SHA256_KERNEL_MAIN
-
-//
-//
-//
-
-#undef  C
-#define C(i)  const beu32 c##i
-
-KERNEL_QUALIFIERS
-LAUNCH_BOUNDS
-void
-sha256TestKernel(beu32* const hash, C16(COMMA,EMPTY))
+__global__ void cuda_post_sha256(uint32_t g_output[8], uint32_t g_tstate_ext[8], uint32_t g_ostate_ext[8], uint32_t g_salt_ext[32])
 {
-#undef  H
-#define H(i,alpha,magic)  beu32 hout##i;
+    g_output     +=  8 * ((blockIdx.x * blockDim.x) + threadIdx.x);
+    g_tstate_ext +=  8 * ((blockIdx.x * blockDim.x) + threadIdx.x);
+    g_ostate_ext +=  8 * ((blockIdx.x * blockDim.x) + threadIdx.x);
+    g_salt_ext   += 32 * ((blockIdx.x * blockDim.x) + threadIdx.x);
 
-  H8(EMPTY,EMPTY);
+    uint32_t tstate[16];
+    mycpy32(tstate, g_tstate_ext);            // TODO: coalescing would be desired
+    
+    uint32_t halfsalt[16];
+    mycpy64_swab32(halfsalt, g_salt_ext);     // TODO: coalescing would be desired
+    cuda_sha256_transform(tstate, halfsalt);
+    mycpy64_swab32(halfsalt, g_salt_ext+16);  // TODO: coalescing would be desired
+    cuda_sha256_transform(tstate, halfsalt);
+    cuda_sha256_transform(tstate, finalblk);
 
-#undef  C
-#define C(i)              c##i
+    uint32_t buf[16];
+    mycpy32(buf, tstate);
+    mycpy32(buf + 8, outerpad);
 
-#undef  H
-#define H(i,alpha,magic)  &hout##i
+    uint32_t ostate[16];
+    mycpy32(ostate, g_ostate_ext);
 
-  sha256_chunk0(C16(COMMA,EMPTY),H8(COMMA,EMPTY));
-
-  //
-  // SAVE H'S FOR NOW JUST SO NVCC DOESN'T OPTIMIZE EVERYTHING AWAY
-  //
-#undef  H
-#define H(i,alpha,magic)  hash[i] = hout##i;
-
-  H8(EMPTY,EMPTY);
+    cuda_sha256_transform(ostate, buf);
+    mycpy32_swab32(g_output, ostate);        // TODO: coalescing would be desired
 }
 
 //
-//
+// callable host code to initialize constants and to call kernels
 //
 
-#include <stdio.h>
-#include<ctime>
-#include<iostream>
-using namespace std;
-
-int main(int argc, char** argv)
+extern "C" void prepare_sha256(int thr_id, uint32_t host_pdata[20], uint32_t host_midstate[8])
 {
-  cudaError_t err;
-  int         device = (argc == 1) ? 0 : atoi(argv[1]);
-
-  cudaDeviceProp props;
-  err = cudaGetDeviceProperties(&props,device);
-
-  if (err)
-    return -1;
-
-  printf("%s (%2d)\n",props.name,props.multiProcessorCount);
-
-  cudaSetDevice(device);
-
-  //
-  // LAUNCH KERNEL
-  //
-  clock_t start, finish;
-  start = clock();
-  beu32* d_hash;
-
-  cudaMalloc(&d_hash,sizeof(beu32)*8);
-
-  //
-  // FROM "FIPS 180-2, Secure Hash Standard, with Change Notice 1"
-  //
-  // B.1 SHA-256 Example (One-Block Message)
-  //
-  // Let the message, M, be the 24-bit (l = 24) ASCII string "abc ",
-  // which is equivalent to the following binary string:
-  //
-  sha256TestKernel<<<1,1>>>(d_hash,
-                            0x61626380,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000000,
-                            0x00000018);
-
-  err = cudaDeviceSynchronize();
-
-  if (err) {
-    printf("Err = %d\n",err);
-    exit(err);
-  }
-
-  //
-  //
-  //
-
-  beu32 hash[8];
-
-  cudaMemcpy(hash,d_hash,sizeof(beu32)*8,cudaMemcpyDeviceToHost);
-
-  printf("gold: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-         0xba7816bf,0x8f01cfea,0x414140de,0x5dae2223,
-         0xb00361a3,0x96177a9c,0xb410ff61,0xf20015ad);
-
-  printf("cuda: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-         hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7]);
-
-  //
-  //
-  //
-
-  cudaFree(d_hash);
-
-  cudaDeviceReset();
-  finish = clock();
-  std::cout << finish - start << "/" << CLOCKS_PER_SEC << " (s) " << std::endl;
-  return 0;
+    static bool init[8] = {false, false, false, false, false, false, false, false};
+    if (!init[thr_id])
+    {
+        checkCudaErrors(cudaMemcpyToSymbol(sha256_h, host_sha256_h, sizeof(host_sha256_h), 0, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpyToSymbol(sha256_k, host_sha256_k, sizeof(host_sha256_k), 0, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpyToSymbol(keypad, host_keypad, sizeof(host_keypad), 0, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpyToSymbol(innerpad, host_innerpad, sizeof(host_innerpad), 0, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpyToSymbol(outerpad, host_outerpad, sizeof(host_outerpad), 0, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpyToSymbol(finalblk, host_finalblk, sizeof(host_finalblk), 0, cudaMemcpyHostToDevice));
+        init[thr_id] = true;
+    }
+    checkCudaErrors(cudaMemcpyToSymbol(pdata, host_pdata, 20*sizeof(uint32_t), 0, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpyToSymbol(midstate, host_midstate, 8*sizeof(uint32_t), 0, cudaMemcpyHostToDevice));
 }
 
-//
-//
-//
+extern "C" void pre_sha256(int thr_id, int stream, uint32_t nonce, int throughput)
+{
+    dim3 block(128);
+    dim3 grid((throughput+127)/128);
 
-#endif
+    cuda_pre_sha256<<<grid, block, 0, context_streams[stream][thr_id]>>>(context_idata[stream][thr_id], context_tstate[stream][thr_id], context_ostate[stream][thr_id], nonce);
+}
+
+extern "C" void post_sha256(int thr_id, int stream, int throughput)
+{
+    dim3 block(128);
+    dim3 grid((throughput+127)/128);
+
+    cuda_post_sha256<<<grid, block, 0, context_streams[stream][thr_id]>>>(context_hash[stream][thr_id], context_tstate[stream][thr_id], context_ostate[stream][thr_id], context_odata[stream][thr_id]);
+}
