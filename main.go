@@ -1,10 +1,9 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	R "math/rand"
 	"net/http"
@@ -22,18 +21,13 @@ type KeyInput struct {
 	Key string `json:"Key"`
 }
 
-func generateKeyPair() (pubkey, privkey []byte) {
-	key, err := ecdsa.GenerateKey(secp256k1.S256(), rand.Reader)
+func secp256k1Decode(privkey []byte) (pubkey []byte) {
+	pubkey, err := secp256k1.GeneratePubKey(privkey)
 	if err != nil {
 		panic(err)
 	}
-	pubkey = elliptic.Marshal(secp256k1.S256(), key.X, key.Y)
-
-	privkey = make([]byte, 32)
-	blob := key.D.Bytes()
-	copy(privkey[32-len(blob):], blob)
-
-	return pubkey, privkey
+	fmt.Println("secp256k1 pubkey:", pubkey)
+	return pubkey
 }
 
 //New Decode
@@ -43,7 +37,9 @@ func DecodeKeyInput(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&keyInput)
 	keyInput.ID = strconv.Itoa(R.Intn(100))
 	KeyInputs = append(KeyInputs, keyInput)
-	json.NewEncoder(w).Encode(keyInput)
+	seckey, _ := hex.DecodeString(keyInput.Key)
+	pubkey := secp256k1Decode(seckey)
+	json.NewEncoder(w).Encode(pubkey)
 }
 
 // main the function where execution of the program begins
