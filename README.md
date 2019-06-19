@@ -1,3 +1,4 @@
 # CudaDecode
 
-#nvcc sha256.cu
+go build -o
+nvcc sha256.cu
