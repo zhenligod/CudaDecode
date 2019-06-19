@@ -423,9 +423,8 @@ int main(int argc, char** argv)
   // Let the message, M, be the 24-bit (l = 24) ASCII string "abc ",
   // which is equivalent to the following binary string:
   //
-  for(int i = 1; i< 100;i++) {
-      for(int j=1;j<10000;j++) {
-  sha256TestKernel<<<1,j>>>(d_hash,
+  
+  sha256TestKernel<<<1,1>>>(d_hash,
                             0x61626380,
                             0x00000000,
                             0x00000000,
@@ -455,10 +454,9 @@ int main(int argc, char** argv)
 
   cudaMemcpy(hash,d_hash,sizeof(beu32)*8,cudaMemcpyDeviceToHost);
 
-  //printf("cuda: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-  //      hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7]);
-  }
- }
+  printf("cuda: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+        hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7]);
+  
 
   cudaFree(d_hash);
   cudaDeviceReset();
