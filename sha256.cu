@@ -1,4 +1,4 @@
-// -*- compile-command: "nvcc -m 32 -arch sm_35 -Xptxas=-v,-abi=no -cubin sha256.cu"; -*-
+// -*- compile-command: "nvcc -m 64 -arch sm_35 -Xptxas=-v,-abi=yes -cubin sha256.cu"; -*-
 
 #include <cuda.h>
 #include<ctime>
