@@ -163,17 +163,8 @@ int main(int argc, char **argv)
 		printf("Ready for Accept,Waitting...\n");
 		new_fd = accept(fd, (struct sockaddr *)&client_addr, (socklen_t *)&struct_len);
 		printf("Get the Client.\n");
-		numbytes = send(new_fd, "Welcome to my server\n", 21, 0);
-		while ((numbytes = recv(new_fd, buff, BUFSIZ, 0)) > 0)
-		{
-			buff[numbytes] = '\0';
-			printf("%s\n", buff);
-			if (send(new_fd, buff, numbytes, 0) < 0)
-			{
-				perror("write");
-				return 1;
-			}
-		}
+		numbytes = recv(new_fd, buff, BUFSIZ, 0);
+		buff[numbytes] = '\0';
 		int i = 0, n = 0;
 		size_t len;
 		unsigned long temp;
@@ -218,6 +209,7 @@ int main(int argc, char **argv)
 
 		cudaDeviceSynchronize();
 		print_jobs(jobs, n);
+		numbytes = send(new_fd, jobs[0]->digest, BUFSIZ, 0);
 		cudaDeviceReset();
 		close(new_fd);
 		close(fd);

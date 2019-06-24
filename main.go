@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/zhenligod/CudaDecode/socket"
+
 	"github.com/gorilla/mux"
 	"github.com/zhenligod/go-ethereum/crypto/secp256k1"
 )
@@ -57,6 +59,12 @@ func DecodeSha256Input(w http.ResponseWriter, r *http.Request) {
 
 // main the function where execution of the program begins
 func main() {
+	serverAddr := "gzhl-feed-qatest125.gzhl.baidu.com:8000"
+	words := "hello world"
+	err := socket.SendPacketClient(serverAddr, words)
+	if err != nil {
+		fmt.Println("socket err")
+	}
 	//Init router
 	r := mux.NewRouter()
 	r.HandleFunc("/api/secp256k1", DecodeSecp256k1Input).Methods("POST")

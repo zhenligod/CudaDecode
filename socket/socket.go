@@ -11,7 +11,7 @@ func sender(conn net.Conn, words string) {
 	fmt.Println("send over")
 }
 
-func sendPacketClient(serverAddr string, words string) error {
+func SendPacketClient(serverAddr string, words string) error {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", serverAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fatal error: %s", err.Error())
