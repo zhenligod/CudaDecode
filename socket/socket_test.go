@@ -7,7 +7,7 @@ import (
 func TestSocketSha256(t *testing.T) {
 	serverAddr := "localhost:8000"
 	words := "hello world"
-	err := SendPacketClient(serverAddr, words)
+	err, _ := SendPacketClient(serverAddr, words)
 	if err != nil {
 		t.Fatal(err)
 	}

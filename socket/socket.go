@@ -11,17 +11,17 @@ func sender(conn net.Conn, words string) {
 	fmt.Println("send over")
 }
 
-func SendPacketClient(serverAddr string, words string) error {
+func SendPacketClient(serverAddr string, words string) (error, string) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", serverAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fatal error: %s", err.Error())
-		return err
+		return err, ""
 	}
 
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fatal error: %s", err.Error())
-		return err
+		return err, ""
 	}
 
 	fmt.Println("connect success")
@@ -29,5 +29,5 @@ func SendPacketClient(serverAddr string, words string) error {
 	buffer := make([]byte, 2048)
 	n, err := conn.Read(buffer)
 	fmt.Println(string(buffer[:n]))
-	return nil
+	return nil, string(buffer[:n])
 }
